@@ -39,8 +39,9 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
       let arguments = call.arguments as! Dictionary<String, AnyObject>
       let mediumId = arguments["mediumId"] as! String
       do {
-        let medium = try getMedium(mediumId: mediumId)
-        result(medium)
+          try getMedium(mediumId: mediumId) { medium in
+              result(medium)
+          }
       } catch {
         result(nil)
       }
@@ -234,7 +235,9 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
       if(lightWeight == true) {
         items.append(getMediumFromAssetLightWeight(asset: asset))
       } else {
-        items.append(getMediumFromAsset(asset: asset))
+          getMediumFromAsset(asset: asset) { item in
+              items.append(item)
+          }
       }
     }
 
@@ -244,7 +247,7 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
     ]
   }
 
-  private func getMedium(mediumId: String) throws -> [String: Any?] {
+    private func getMedium(mediumId: String, finish: (([String: Any?]) -> Void)?) throws {
     let fetchOptions = PHFetchOptions()
     if #available(iOS 9, *) {
       fetchOptions.fetchLimit = 1
@@ -255,7 +258,9 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
       throw NSError(domain: "photo_gallery", code: 404)
     } else {
       let asset: PHAsset = assets[0]
-      return getMediumFromAsset(asset: asset)
+    getMediumFromAsset(asset: asset) { item in
+          finish?(item)
+      }
     }
   }
 
@@ -463,26 +468,35 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
     }
   }
 
-  private func getMediumFromAsset(asset: PHAsset) -> [String: Any?] {
+  private func getMediumFromAsset(asset: PHAsset, finish: (([String: Any?]) -> Void)?) {
     let filename = self.extractFilenameFromAsset(asset: asset)
     let mimeType = self.extractMimeTypeFromAsset(asset: asset)
     let resource = self.extractResourceFromAsset(asset: asset)
     let size = self.extractSizeFromResource(resource: resource)
-    let orientation = self.toOrientationValue(orientation: asset.value(forKey: "orientation") as? UIImage.Orientation)
-    return [
-      "id": asset.localIdentifier,
-      "filename": filename,
-      "title": self.extractTitleFromFilename(filename: filename),
-      "mediumType": toDartMediumType(value: asset.mediaType),
-      "mimeType": mimeType,
-      "height": asset.pixelHeight,
-      "width": asset.pixelWidth,
-      "size": size,
-      "orientation": orientation,
-      "duration": NSInteger(asset.duration * 1000),
-      "creationDate": (asset.creationDate != nil) ? NSInteger(asset.creationDate!.timeIntervalSince1970 * 1000) : nil,
-      "modifiedDate": (asset.modificationDate != nil) ? NSInteger(asset.modificationDate!.timeIntervalSince1970 * 1000) : nil
-    ]
+    var resultOrientation = 0 // self.toOrientationValue(orientation: asset.value(forKey: "orientation") as? UIImage.Orientation)
+      
+      let options = PHImageRequestOptions()
+      options.isSynchronous = true
+      PHImageManager.default().requestImageData(for: asset, options: options) { [weak self] _, _, orientation, _ in
+          guard let self else { return }
+          
+          print("--->", orientation.rawValue)
+          resultOrientation = orientation.rawValue
+          finish?([
+            "id": asset.localIdentifier,
+            "filename": filename,
+            "title": self.extractTitleFromFilename(filename: filename),
+            "mediumType": toDartMediumType(value: asset.mediaType),
+            "mimeType": mimeType,
+            "height": asset.pixelHeight,
+            "width": asset.pixelWidth,
+            "size": size,
+            "orientation": resultOrientation,
+            "duration": NSInteger(asset.duration * 1000),
+            "creationDate": (asset.creationDate != nil) ? NSInteger(asset.creationDate!.timeIntervalSince1970 * 1000) : nil,
+            "modifiedDate": (asset.modificationDate != nil) ? NSInteger(asset.modificationDate!.timeIntervalSince1970 * 1000) : nil
+          ])
+      }
   }
 
   private func getMediumFromAssetLightWeight(asset: PHAsset) -> [String: Any?] {
