@@ -250,10 +250,12 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
               }
               semaphore.wait() // 等待异步操作完成
           }
-          finishBlock?([
-            "start": start,
-            "items": items,
-          ])
+          DispatchQueue.main.async {
+              finishBlock?([
+                "start": start,
+                "items": items,
+              ])
+          }
       }
   }
 
