@@ -26,14 +26,17 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
       let skip = arguments["skip"] as? NSNumber
       let take = arguments["take"] as? NSNumber
       let lightWeight = arguments["lightWeight"] as? Bool
-      result(listMedia(
+      listMedia(
         albumId: albumId,
         mediumType: mediumType,
         newest: newest,
         skip: skip,
         take: take,
-        lightWeight: lightWeight
-      ))
+        lightWeight: lightWeight,
+        finishBlock: { dic in
+            result(dic)
+        }
+      )
     }
     else if(call.method == "getMedium") {
       let arguments = call.arguments as! Dictionary<String, AnyObject>
@@ -204,8 +207,9 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
     newest: Bool,
     skip: NSNumber?,
     take: NSNumber?,
-    lightWeight: Bool? = false
-  ) -> NSDictionary {
+    lightWeight: Bool? = false,
+    finishBlock: ((NSDictionary) -> Void)?
+  ) {
     let fetchOptions = PHFetchOptions()
     fetchOptions.predicate = predicateFromMediumType(mediumType: mediumType)
     fetchOptions.sortDescriptors = [
@@ -230,21 +234,27 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
     let total = fetchResult.count
     let end = take == nil ? total : min(start + take!.intValue, total)
     var items = [[String: Any?]]()
-    for index in start..<end {
-      let asset = fetchResult.object(at: index) as PHAsset
-      if(lightWeight == true) {
-        items.append(getMediumFromAssetLightWeight(asset: asset))
-      } else {
-          getMediumFromAsset(asset: asset) { item in
-              items.append(item)
+      DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+          guard let self = self else { return }
+          let semaphore = DispatchSemaphore(value: 0) // 控制异步完成
+          for index in start..<end {
+              let asset = fetchResult.object(at: index) as PHAsset
+              if(lightWeight == true) {
+                  items.append(getMediumFromAssetLightWeight(asset: asset))
+                  semaphore.signal() // 通知完成
+              } else {
+                  getMediumFromAsset(asset: asset) { item in
+                      items.append(item)
+                      semaphore.signal() // 通知完成
+                  }
+              }
+              semaphore.wait() // 等待异步操作完成
           }
+          finishBlock?([
+            "start": start,
+            "items": items,
+          ])
       }
-    }
-
-    return [
-      "start": start,
-      "items": items,
-    ]
   }
 
     private func getMedium(mediumId: String, finish: (([String: Any?]) -> Void)?) throws {
@@ -468,21 +478,25 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
     }
   }
 
-  private func getMediumFromAsset(asset: PHAsset, finish: (([String: Any?]) -> Void)?) {
-    let filename = self.extractFilenameFromAsset(asset: asset)
-    let mimeType = self.extractMimeTypeFromAsset(asset: asset)
-    let resource = self.extractResourceFromAsset(asset: asset)
-    let size = self.extractSizeFromResource(resource: resource)
-    var resultOrientation = 0 // self.toOrientationValue(orientation: asset.value(forKey: "orientation") as? UIImage.Orientation)
-      
-      let options = PHImageRequestOptions()
-      options.isSynchronous = true
-      PHImageManager.default().requestImageData(for: asset, options: options) { [weak self] _, _, orientation, _ in
-          guard let self else { return }
-          
-          print("--->", orientation.rawValue)
-          resultOrientation = orientation.rawValue
-          finish?([
+    private func getMediumFromAsset(asset: PHAsset, finish: (([String: Any?]) -> Void)?) {
+        let filename = self.extractFilenameFromAsset(asset: asset)
+        let mimeType = self.extractMimeTypeFromAsset(asset: asset)
+        let resource = self.extractResourceFromAsset(asset: asset)
+        let size = self.extractSizeFromResource(resource: resource)
+        var resultOrientation = 0 // self.toOrientationValue(orientation: asset.value(forKey: "orientation") as? UIImage.Orientation)
+        if #available(iOS 18.0, *) {
+            let options = PHImageRequestOptions()
+            options.isSynchronous = true
+            PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: 1, height: 1), contentMode: .aspectFit, options: options) { image, _ in
+                if let image = image {
+                    resultOrientation = self.toOrientationValue(orientation: image.imageOrientation)
+                }
+            }
+        } else {
+            resultOrientation = self.toOrientationValue(orientation: asset.value(forKey: "orientation") as? UIImage.Orientation)
+        }
+        
+        finish?([
             "id": asset.localIdentifier,
             "filename": filename,
             "title": self.extractTitleFromFilename(filename: filename),
@@ -495,9 +509,8 @@ public class PhotoGalleryPlugin: NSObject, FlutterPlugin {
             "duration": NSInteger(asset.duration * 1000),
             "creationDate": (asset.creationDate != nil) ? NSInteger(asset.creationDate!.timeIntervalSince1970 * 1000) : nil,
             "modifiedDate": (asset.modificationDate != nil) ? NSInteger(asset.modificationDate!.timeIntervalSince1970 * 1000) : nil
-          ])
-      }
-  }
+        ])
+    }
 
   private func getMediumFromAssetLightWeight(asset: PHAsset) -> [String: Any?] {
     return [
